@@ -27,10 +27,12 @@ class Player {
     static boolean canGrowRoot;
     static boolean canGrowSporerAndShootIt;
     static ArrayList<Entity> my;
+    static ArrayList<Entity> myActive;
     static Set<Integer> myRoots;
     static ArrayList<Entity> enemy;
     static ArrayList<Entity> walls;
     static Entity newSpore;
+    static Entity toBeNewSpore;
 
     public static void main(String args[]) {
         Scanner in = new Scanner(System.in);
@@ -44,9 +46,13 @@ class Player {
             computeDistancesToProtein();
 
             System.err.println(requiredActionsCount + " x grow():");
-            for (int i = 0; i < requiredActionsCount; i++) { // TODO: grow all organisms
+            for (int i = 0; i < requiredActionsCount; i++) {
                 System.err.println("Grow #" + i);
                 grow();
+            }
+            myRoots.forEach(Player::printWait);
+            if (toBeNewSpore != null) {
+                newSpore = toBeNewSpore;
             }
         }
     }
@@ -64,6 +70,7 @@ class Player {
         enemy = new ArrayList<>();
         walls = new ArrayList<>();
         As = new ArrayList<>();
+        toBeNewSpore = null;
 
         int entityCount = in.nextInt();
         for (int i = 0; i < entityCount; i++) {
@@ -88,6 +95,7 @@ class Player {
         requiredActionsCount = in.nextInt(); // your number of organisms, output an action for each one in any order
         recalculateGrowingPossibilities();
         scanArea();
+        myActive = new ArrayList<>(my);
 
 //            System.err.println("myA:" + myA);
 //            System.err.println("myB:" + myB);
@@ -153,6 +161,7 @@ class Player {
         int organRootId;
         int distToProtein;
         int levelBFS = 0;
+        String dir;
 
         public Entity() {
             this.type = "OUT";
@@ -205,31 +214,32 @@ class Player {
     }
 
     public static void grow() {
-        // Priorities of growth:
-        // 1. harvest unharvested protein
-        // 2. get closer to unharvested protein
-        // 3. protect harvested protein
-        // 4. fill area (reach furthest)
-        // 5. consume proteins
-
-        List<Object> collect = flatten(matrix).toList();
-        Iterator<Entity> sortedByProteinDistances = my.stream().filter(e -> e.distToProtein > 1)
-                .sorted(Comparator.comparing(e -> e.distToProtein)).iterator();
-        Iterator<Entity> sortedByIds = my.stream().filter(e -> e.distToProtein <= 1)
-                .sorted(Comparator.comparing(Entity::getOrganId).reversed()).iterator();
+//        List<Object> collect = flatten(matrix).toList();
         boolean done;
-        done = growFromCells(sortedByProteinDistances, false);
+        Iterator<Entity> nextButOneToProteins = my.stream().filter(e -> e.distToProtein == 2)
+                .sorted(Comparator.comparing(e -> e.distToProtein)).iterator();
+        done = growFromCells(nextButOneToProteins, false);
+//        System.err.println("MyActive:" + myActive.get(0).distToProtein + "" + myActive.get(0).type);
+        Iterator<Entity> sortedByProteinDistances = myActive.stream().filter(e -> e.distToProtein > 2)
+                .sorted(Comparator.comparing(e -> e.distToProtein)).iterator();
+        done = growFromCells(sortedByProteinDistances, done);
+        Iterator<Entity> sortedByIds = myActive.stream().filter(e -> e.distToProtein < 2)
+                .sorted(Comparator.comparing(Entity::getOrganId).reversed()).iterator();
         growFromCells(sortedByIds, done);
     }
 
-    private static boolean growFromCells(Iterator<Entity> sortedByProteinDistances, boolean done) {
+    private static boolean growFromCells(Iterator<Entity> sortedCells, boolean done) {
+        //TODO: - prioritize
+        //      - start using tentacles
+        //      - refactor this mess
         int rootId;
         int targetY;
         int targetX;
         int sourceId;
-        while (sortedByProteinDistances.hasNext() && !done) {
-            Entity source = sortedByProteinDistances.next();
-            System.err.println("Source: " + source.organId);
+        System.err.println("myRoots: " + Arrays.toString(myRoots.stream().mapToInt(t -> t).toArray()));
+        while (sortedCells.hasNext() && !done) {
+            Entity source = sortedCells.next();
+            System.err.println("Source: " + source.organId + ", dist: " + source.distToProtein + ", rootId: " + source.organRootId);
             LinkedList<Entity> neighbours = new LinkedList<>();
             Set<Entity> visited = new HashSet<>();
             visited.add(source);
@@ -245,83 +255,95 @@ class Player {
                 System.err.println("Neighbours[" + entity.x + "; " + entity.y + "]: distToProt: " + entity.distToProtein);
             }
 
-            if (newSpore != null) {
+            System.err.println("canGrowSporerAndShootIt: " + canGrowSporerAndShootIt);
+            System.err.println("canGrowHarvester: " + canGrowHarvester);
+            System.err.println("myRoots.contains(source.organRootId): " + myRoots.contains(source.organRootId));
+
+
+            if (canGrowHarvester && myRoots.contains(source.organRootId) && (source.distToProtein == 2)) { // TODO: extract this check
+                System.err.println("canGrowHarvester from organ #" + source.organId);
+                Optional<Entity> closestToProtein = neighbours.stream().filter(e -> e.distToProtein == 1).findFirst();
+                if (closestToProtein.isPresent()) {
+                    Entity harvester = closestToProtein.get();
+                    String dir = findDirectionToProtein(harvester);
+                    harvesting.add(getNeighbour(harvester, dir));
+                    System.err.println("Harvesting");
+                    harvesting.forEach(h -> System.err.println(h.type + " at [" + h.x + "; " + h.y + "]"));
+                    done = printInstruction(source.organRootId, source.organId, harvester.x, harvester.y, "HARVESTER", dir);
+                }
+            } else if (newSpore != null && my.contains(newSpore) && myRoots.contains(my.get(my.indexOf(newSpore)).organRootId)) {
                 LinkedList<Entity> neighbours2 = new LinkedList<>();
                 Set<Entity> visited2 = new HashSet<>();
                 visited2.add(newSpore);
                 neighbours2.add(newSpore);
                 addFreeNeighbours(newSpore, neighbours2, visited2);
-                Optional<Entity> closestToProtein = neighbours.stream().filter(e -> !harvesting.contains(e)).min(Comparator.comparing(e -> e.distToProtein));
-                if (closestToProtein.isPresent()) {
-                    Entity neighbour = closestToProtein.get();
-                    sourceId = my.get(my.indexOf(newSpore)).organId;
-                    rootId = my.get(my.indexOf(newSpore)).organRootId;
-                    targetX = neighbour.x;
-                    targetY = neighbour.y;
-                    int dirX = targetX - newSpore.x;
-                    int dirY = targetY - newSpore.y;
-
-                    Entity target = getEntity(newSpore.x + dirX, newSpore.y + dirY);
-                    System.err.println("Target[" + target.x + "; " + target.y + "]");
-                    while ("FREE".equals(target.type)) {
-                        Entity target2 = getEntity(target.x + dirX, target.y + dirY);
-                        if ("FREE".equals(target2.type)) {
-                            target = target2;
-                            System.err.println("Target[" + target.x + "; " + target.y + "]");
-                        } else {
-                            break; // TODO: fix this while
-                        }
-                    }
-                    System.err.println("Spore: " + sourceId + " -> target: [" + target.x + "; " + target.y + "]");
-                    done = printInstruction(rootId, "SPORE", sourceId, target.x, target.y, "N");
+                String dir = newSpore.dir;
+                int dirX = 0;
+                int dirY = 0;
+                switch (dir) {
+                    case "N" -> dirY = -1;
+                    case "S" -> dirY = 1;
+                    case "E" -> dirX = 1;
+                    case "W" -> dirX = -1;
                 }
+                sourceId = my.get(my.indexOf(newSpore)).organId;
+                rootId = my.get(my.indexOf(newSpore)).organRootId;
+                Entity target = getEntity(newSpore.x + dirX, newSpore.y + dirY);
+                System.err.println("Target[" + target.x + "; " + target.y + "]");
+                while ("FREE".equals(target.type)) {
+                    Entity target2 = getEntity(target.x + dirX, target.y + dirY);
+                    if ("FREE".equals(target2.type)) {
+                        target = target2;
+                        System.err.println("Target[" + target.x + "; " + target.y + "]");
+                    } else {
+                        break; // TODO: fix this while
+                    }
+                }
+                System.err.println("Spore: " + sourceId + " -> target: [" + target.x + "; " + target.y + "]");
+                done = printInstruction(rootId, "SPORE", sourceId, target.x, target.y, "N");
                 newSpore = null;
-            } else if (canGrowSporerAndShootIt && source.distToProtein > 3) {
+            } else if (canGrowSporerAndShootIt && myRoots.contains(source.organRootId)) {
                 System.err.println("canGrowSporer from organ #" + source.organId);
-                String dir = "E"; // TODO: select dir
                 Optional<Entity> closestToProtein = neighbours.stream().filter(e -> !harvesting.contains(e)).min(Comparator.comparing(e -> e.distToProtein));
                 if (closestToProtein.isPresent()) {
                     Entity target = closestToProtein.get();
                     sourceId = source.organId;
                     targetX = target.x;
                     targetY = target.y;
-                    newSpore = target;
+                    toBeNewSpore = target;
+                    String dir = findFreeDir(target);
                     done = printInstruction(source.organRootId, sourceId, targetX, targetY, "SPORER", dir);
                 }
             } else if (canGrowHarvester) {
-                if (source.distToProtein == 1) {
-                    Optional<Entity> closestToProtein = neighbours.stream().filter(e -> e.distToProtein > 0).filter(e -> !harvesting.contains(e)).min(Comparator.comparing(e -> e.distToProtein));
-                    if (closestToProtein.isPresent()) {
-                        sourceId = source.organId;
-                        targetX = closestToProtein.get().x;
-                        targetY = closestToProtein.get().y;
-                        done = printInstruction(source.organRootId, sourceId, targetX, targetY, "N");
-                    }
-                } else if (source.distToProtein == 2) {
-                    System.err.println("canGrowHarvester from organ #" + source.organId);
-                    Optional<Entity> closestToProtein = neighbours.stream().filter(e -> !harvesting.contains(e)).min(Comparator.comparing(e -> e.distToProtein));
-                    if (closestToProtein.isPresent()) {
-                        Entity harvester = closestToProtein.get();
-                        String dir = findDirectionToProtein(harvester);
-                        harvesting.add(As.get(0));
-                        done = printInstruction(source.organRootId, source.organId, harvester.x, harvester.y, "HARVESTER", dir);
-                    }
-                } else if (source.distToProtein != -1) {
+                if (myRoots.contains(source.organRootId)) {
+                    if (source.distToProtein == 1) {
+                        Optional<Entity> closestToProtein = neighbours.stream().filter(e -> !harvesting.contains(e)).min(Comparator.comparing(e -> e.distToProtein));
+                        if (closestToProtein.isPresent()) {
+                            sourceId = source.organId;
+                            targetX = closestToProtein.get().x;
+                            targetY = closestToProtein.get().y;
+                            done = printInstruction(source.organRootId, sourceId, targetX, targetY, "Free");
+                        }
+                    } else if (source.distToProtein != -1) {
 //                if (source.distToProtein == 1) {
 //                System.err.println("As[0]: " + As.get(0));
 //                System.err.println("Harvesting: " + harvesting.get(0));
 //                }
-                    Optional<Entity> closestToProtein = neighbours.stream().filter(e -> !harvesting.contains(e)).min(Comparator.comparing(e -> e.distToProtein));
-                    if (closestToProtein.isPresent()) {
-                        sourceId = source.organId;
-                        targetX = closestToProtein.get().x;
-                        targetY = closestToProtein.get().y;
-                        done = printInstruction(source.organRootId, sourceId, targetX, targetY, "N");
+                        Optional<Entity> closestToProtein = neighbours.stream().filter(e -> !harvesting.contains(e)).min(Comparator.comparing(e -> e.distToProtein));
+                        if (closestToProtein.isPresent()) {
+                            sourceId = source.organId;
+                            targetX = closestToProtein.get().x;
+                            targetY = closestToProtein.get().y;
+                            done = printInstruction(source.organRootId, sourceId, targetX, targetY, "N");
+                        }
                     }
                 } else {
                     Iterator<Entity> sortedByAge = my.stream().sorted(Comparator.comparing(Entity::getOrganId).reversed()).iterator();
                     while (sortedByAge.hasNext() && !done) {
                         Entity source1 = sortedByAge.next();
+                        if (!myRoots.contains(source1.organRootId)) {
+                            continue;
+                        }
                         System.err.println("Source: " + source1.organId);
                         LinkedList<Entity> neighbours1 = new LinkedList<>();
                         Set<Entity> visited1 = new HashSet<>();
@@ -347,7 +369,7 @@ class Player {
                         done = printInstruction(source1.organRootId, "GROW", sourceId, targetX, targetY, type, "E");
                     }
                 }
-            } else if (source.distToProtein != -1) {
+            } else if (source.distToProtein != -1 && myRoots.contains(source.organRootId)) {
 //                if (source.distToProtein == 1) {
 //                System.err.println("As[0]: " + As.get(0));
 //                System.err.println("Harvesting: " + harvesting.get(0));
@@ -363,6 +385,9 @@ class Player {
                 Iterator<Entity> sortedByAge = my.stream().sorted(Comparator.comparing(Entity::getOrganId).reversed()).iterator();
                 while (sortedByAge.hasNext() && !done) {
                     Entity source1 = sortedByAge.next();
+                    if (!myRoots.contains(source1.organRootId)) {
+                        continue;
+                    }
                     System.err.println("Source: " + source1.organId);
                     LinkedList<Entity> neighbours1 = new LinkedList<>();
                     Set<Entity> visited1 = new HashSet<>();
@@ -392,6 +417,17 @@ class Player {
         return done;
     }
 
+    private static Entity getNeighbour(Entity cell, String dir) {
+        Entity neighbour = new Entity();
+        switch (dir) {
+            case "N" -> neighbour = getEntity(cell.x, cell.y - 1);
+            case "S" -> neighbour = getEntity(cell.x, cell.y + 1);
+            case "E" -> neighbour = getEntity(cell.x + 1, cell.y);
+            case "W" -> neighbour = getEntity(cell.x - 1, cell.y);
+        }
+        return neighbour;
+    }
+
     private static String findDirectionToProtein(Entity cell) {
         System.err.println("findDirectionToProtein: ");
         System.err.println("E: " + getEntity(cell.x + 1, cell.y).type);
@@ -412,6 +448,39 @@ class Player {
             return "N";
         }
         return "";
+    }
+
+    private static String findFreeDir(Entity cell) {
+        String dir = "E";
+        ArrayList<Integer> pathLengths = new ArrayList<>();
+        pathLengths.add(getPathLength(cell, 0, -1));
+        pathLengths.add(getPathLength(cell, 0, 1));
+        pathLengths.add(getPathLength(cell, 1, 0));
+        pathLengths.add(getPathLength(cell, -1, 0));
+
+        switch (pathLengths.indexOf(pathLengths.stream().mapToInt(i -> i).max().getAsInt())) {
+            case 0 -> dir = "N";
+            case 1 -> dir = "S";
+            case 2 -> dir = "E";
+            case 3 -> dir = "W";
+        }
+
+        cell.dir = dir;
+        return dir;
+    }
+
+    private static Entity findNeighbour(Entity cell, int xDir, int yDir) {
+        return getEntity(cell.x + xDir, cell.y + yDir);
+    }
+
+    private static int getPathLength(Entity cell, int xDir, int yDir) {
+        int n = 0;
+        Entity neighbour = findNeighbour(cell, xDir, yDir);
+        while ("FREE".equals(neighbour.type)) {
+            n++;
+            neighbour = findNeighbour(neighbour, xDir, yDir);
+        }
+        return n;
     }
 
 
@@ -436,10 +505,16 @@ class Player {
             System.err.println("--- " + grow + " " + sourceId + " " + targetX + " " + targetY + optionalType + direction);
             System.out.println(grow + " " + sourceId + " " + targetX + " " + targetY + optionalType + direction);
             myRoots.remove(rootId);
+            myActive.removeIf(e -> rootId == e.organRootId);
+            consumeResources(type);
             return true;
         } else {
             return false;
         }
+    }
+
+    private static void printWait(int sourceId) {
+        System.out.println("WAIT " + sourceId);
     }
 
     private static Stream<Object> flatten(Object[] array) {
@@ -447,6 +522,30 @@ class Player {
                 .flatMap(o -> o instanceof Object[] a ? flatten(a) : Stream.of(o));
     }
 
+    private static void consumeResources(String type) {
+        switch (type) {
+            case "HARVESTER" -> {
+                myC--;
+                myD--;
+            }
+            case "SPORER" -> {
+                myB--;
+                myD--;
+            }
+            case "TENTACLE" -> {
+                myB--;
+                myC--;
+            }
+            case "" -> {
+                myA--;
+                myB--;
+                myC--;
+                myD--;
+            }
+            default -> myA--;
+        }
+        recalculateGrowingPossibilities();
+    }
 
     public static int computeDistToProtein(Entity entity) {
 
@@ -457,7 +556,8 @@ class Player {
         addFreeNeighbours(entity, neighbours, visited);
 
         while (!neighbours.isEmpty()) {
-            Optional<Entity> protein = neighbours.stream().filter(e -> "A".equals(e.type)).filter(e -> !harvesting.contains(e)).findFirst();
+            Optional<Entity> protein = neighbours.stream().filter(e -> e.type.matches("[ABCD]"))
+                    .filter(e -> !harvesting.contains(e)).findFirst();
             if (protein.isPresent()) {
                 return protein.get().levelBFS;
             } else {
@@ -496,7 +596,7 @@ class Player {
     }
 
     public static Entity getEntity(int x, int y) {
-        if (x < 1 || x >= width || y < 1 || y >= height) {
+        if (x < 0 || x >= width || y < 0 || y >= height) {
             return new Entity();
         }
         if (matrix[x][y] == null) {
